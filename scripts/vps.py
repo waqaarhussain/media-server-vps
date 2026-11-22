@@ -174,6 +174,15 @@ def fresh_snapshot(snapshot):
     manage.atomic(snapshot/'fresh-settings-audit.json',json.dumps(audit,indent=2)+'\n')
 
 
+def prepare_restore(snapshot,qbit_snapshot=None,use_embedded=True):
+    embedded=snapshot/'qbit-settings.json'
+    if use_embedded and embedded.exists():
+        qbit_snapshot=qbit_migrate.validate(json.loads(embedded.read_text()))
+        print('qBittorrent settings found inside the main backup. No separate export needed.')
+    fresh_snapshot(snapshot)
+    return qbit_snapshot
+
+
 def service(name, body):
     manage.atomic('/etc/systemd/system/'+name+'.service',body,0o644)
 
@@ -515,6 +524,9 @@ def install(args):
     if not backup.is_file():raise ValueError('Encrypted backup file not found. Upload it first.')
     # Decrypt and validate the optional settings export before storage mutations.
     qbit_snapshot=qbit_migrate.load_backup(args.qbit_settings) if args.qbit_settings else None
+    qbit_cache=Path(cfg['home'])/'.config/media-request-bot/qbit-migration.json'
+    if not qbit_snapshot and not args.fresh_qbit and state.get('restored') and qbit_cache.exists():
+        qbit_snapshot=qbit_migrate.validate(json.loads(qbit_cache.read_text()))
     if not state.get('storage'):
         if args.storage:
             state['storage']=storage.configure(args.storage)
@@ -532,8 +544,20 @@ def install(args):
     if len(password)<8 or '\n' in password or ':' in password:raise ValueError('Use at least 8 characters, without colons/newlines.')
     if password!=getpass.getpass('Confirm password: '):raise ValueError('Passwords differ.')
     if not state.get('restored'):
-        manage.restore(cfg,backup,prepare=fresh_snapshot)
+        def prepare(snapshot):
+            nonlocal qbit_snapshot
+            qbit_snapshot=prepare_restore(snapshot,qbit_snapshot,
+                                         use_embedded=not args.fresh_qbit and not args.qbit_settings)
+        manage.restore(cfg,backup,prepare=prepare)
+        if qbit_snapshot:
+            manage.atomic(qbit_cache,json.dumps(qbit_snapshot)+'\n');manage.own(qbit_cache,cfg)
         state['restored']=True;save(state)
+    # Compatibility for older archives which predate the combined backup.
+    if not args.fresh_qbit and qbit_snapshot is None:
+        extra=choose_qbit_backup()
+        if extra:
+            qbit_snapshot=qbit_migrate.load_backup(extra)
+            manage.atomic(qbit_cache,json.dumps(qbit_snapshot)+'\n');manage.own(qbit_cache,cfg)
     base=Path('/var/lib/media-stack');base.mkdir(parents=True,exist_ok=True)
     os.chown(base,cfg['uid'],cfg['gid']);base.chmod(0o750)
     folders(pool,cfg)
@@ -573,7 +597,6 @@ def main():
     if args.command=='install':
         if not args.restore:args.restore=choose_backup()
         if args.qbit_settings and args.fresh_qbit:raise ValueError('Choose a qBittorrent backup or fresh defaults, not both.')
-        if not args.qbit_settings and not args.fresh_qbit:args.qbit_settings=choose_qbit_backup()
         install(args)
     elif args.command=='status':
         state=check_ready();print('Services ready. Media directory: '+state['pool'])

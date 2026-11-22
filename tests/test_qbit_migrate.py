@@ -116,4 +116,29 @@ class PortableSettingsTests(unittest.TestCase):
             subprocess.run(['gpgconf','--homedir',str(home),'--kill','gpg-agent'],capture_output=True)
 
 
+class EmbeddedRestoreTests(unittest.TestCase):
+    def test_combined_archive_settings_are_selected_before_database_sanitisation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot=Path(tmp);source=document(up_limit=42)
+            (snapshot/'qbit-settings.json').write_text(json.dumps(source))
+            with patch.object(vps,'fresh_snapshot') as fresh,patch.object(vps,'choose_qbit_backup') as chooser:
+                self.assertEqual(vps.prepare_restore(snapshot),source)
+                fresh.assert_called_once_with(snapshot);chooser.assert_not_called()
+
+    def test_explicit_override_or_fresh_defaults_do_not_parse_old_embedded_settings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot=Path(tmp);(snapshot/'qbit-settings.json').write_text('bad old export')
+            override=document(up_limit=99)
+            with patch.object(vps,'fresh_snapshot'):
+                self.assertEqual(vps.prepare_restore(snapshot,override,use_embedded=False),override)
+                self.assertIsNone(vps.prepare_restore(snapshot,use_embedded=False))
+
+    def test_invalid_embedded_settings_stop_before_sanitisation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            snapshot=Path(tmp);(snapshot/'qbit-settings.json').write_text('{}')
+            with patch.object(vps,'fresh_snapshot') as fresh,self.assertRaises(ValueError):
+                vps.prepare_restore(snapshot)
+            fresh.assert_not_called()
+
+
 if __name__=='__main__':unittest.main()

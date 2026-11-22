@@ -8,22 +8,33 @@ This installer imports **settings only** from an encrypted `media-server backup`
 
 The shared public IMDb catalogue can be retained. This contains public movie metadata, not your download history. The Telegram update offset is retained to avoid replaying old commands. Finish any active downloads on the old server first; they will not resume here.
 
-## Export qBittorrent settings on the OLD AppBox server
+## One combined backup on AppBox and the dedicated server
 
-The original AppBox backup does not contain its provider-managed qBittorrent settings. Export these separately before migration:
+On the **current AppBox Ubuntu VM** where the bot and Radarr run:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/waqaarhussain/media-server-vps/main/scripts/qbit_migrate.py -o /tmp/qbit-migrate.py
-sudo python3 /tmp/qbit-migrate.py export
+update-live && media-server backup
 ```
 
-This reads the qBittorrent connection saved in native Radarr where available. Choose a connection by number. If it cannot find one, enter the current qBittorrent WebUI URL, username and hidden password. Then choose an encryption passphrase. It saves `qbit-settings-<timestamp>.json.gpg` in the existing user's `media-server-backups` folder and prints the exact filename. Export only authenticates and reads application version, preferences and category definitions. It does not modify the old client or stop its downloads.
+`update-live` uses the original `media-server` repository on AppBox. The updated backup authenticates to the qBittorrent app slot using Radarr's saved connection, reads its preferences and category definitions, and puts `snapshot/qbit-settings.json` inside the **same encrypted `.tar.gz.gpg` archive** as the usual Radarr/Prowlarr/bot snapshot. One archive and one backup encryption passphrase are sufficient. No separate qBittorrent export is needed.
 
-Copy **both** the original media-server backup and this extra qBittorrent settings file to the new server. The installer searches for the extra file and lets you choose it by number. Its passphrase is requested before any disk formatting. Choose **S** only if you want fresh qBittorrent defaults. You can also pass `--qbit-settings /path/qbit-settings-....json.gpg` or explicitly use `--fresh-qbit`.
+If several Radarr categories use the same qBittorrent connection, it is read once with no extra connection prompt. Distinct qBittorrent instances prompt you to choose one. If no connection can be discovered, the helper asks for the current WebUI URL and hidden login. If authentication or capture fails, the backup stops before stopping services and does not report success. Capture does not change the old client's settings or downloads.
 
-Portable preferences supported by the new version are restored, including speed limits, queue limits, connection limits, disk-cache preferences where available, and seeding limits. Category names are retained, including **Movies, Kids Movies, TV Series, Kids TV Series and radarr**. Their old save paths are replaced with new download staging paths. Radarr imports completed movies to `/srv/media/Movies` or `/srv/media/Kids/Movies`, so the bot's **Save to Kids** option still controls the final library destination.
+Copy the single completed archive to the new server. The installer finds it by number and uses the embedded qBittorrent settings automatically, with no second settings file or second encryption passphrase. It still clears movie/library/download history during settings-only migration. Old source databases in the encrypted backup remain full snapshots for recovery; the original archive is not modified.
 
-Custom completion scripts, watched folders, proxy/interface bindings, old WebUI credentials and unsupported preferences are captured in the encrypted export for review, but are not automatically activated. RSS feeds/rules, search plugins, cookies, torrent entries, resume data, per-torrent settings, payloads and download history are not exported. Delete-files seeding actions are changed to remove the torrent entry while retaining its files. The new login and ports take precedence. A root-only `/etc/media-qbit-migration.json` report lists applied preferences, review items and the new category paths. A separate export is needed for future qBittorrent settings migrations too.
+On the dedicated server, future backups use the same command:
+
+```bash
+sudo media-server backup
+```
+
+Portable preferences supported by the new qBittorrent version are restored, including speed limits, queue limits, connection limits, disk-cache preferences where available, and seeding limits. Category names are retained, including **Movies, Kids Movies, TV Series, Kids TV Series and radarr**. Their old save paths are replaced with new download staging paths. Radarr imports completed movies to `/srv/media/Movies` or `/srv/media/Kids/Movies`, so the bot's **Save to Kids** option still controls the final library destination.
+
+Custom completion scripts, watched folders, proxy/interface bindings, old WebUI credentials and unsupported preferences are captured for review, but are not automatically activated. RSS feeds/rules, search plugins, cookies, torrent entries, resume data, per-torrent settings, payloads and download history are not exported from qBittorrent. Delete-files seeding actions are changed to remove the torrent entry while retaining its files. The new login and ports take precedence. A root-only `/etc/media-qbit-migration.json` report lists applied preferences, review items and new category paths.
+
+### Older backups
+
+Archives made before this update remain supported. If they lack embedded qBittorrent settings, the installer offers the earlier separate `qbit-settings-....json.gpg` export, or **S** for fresh defaults. The standalone export helper remains available for this compatibility case. `--qbit-settings /path/qbit-settings-....json.gpg` explicitly overrides the embedded settings; `--fresh-qbit` deliberately skips them.
 
 ## Before running
 
@@ -129,6 +140,6 @@ Run tests with:
 PYTHONPATH=scripts:bot python3 -m unittest discover -s tests
 ```
 
-Tests cover bot behaviour, conservative disk selection, cancelling before formatting, settings-only database sanitisation, credential-safe errors, qBittorrent settings export/import, category path mapping and password hashing. The native GPG roundtrip test runs where Unix sockets for gpg-agent are available; it is skipped in restricted environments. File Browser is pinned and its downloaded release checksum is verified. Its actual binary was smoke-tested for initialisation and login. The dashboard HTTP endpoints were checked locally.
+Tests cover bot behaviour, conservative disk selection, cancelling before formatting, settings-only database sanitisation, credential-safe errors, combined encrypted backup structure, embedded qBittorrent settings import, category path mapping and password hashing. The native GPG roundtrip test runs where Unix sockets for gpg-agent are available; it is skipped in restricted environments. File Browser is pinned and its downloaded release checksum is verified. Its actual binary was smoke-tested for initialisation and login. The dashboard HTTP endpoints were checked locally.
 
 The complete installer has **not** been run against a disposable four-disk Ubuntu machine. Native service installation, provider networking and the actual disk layout must still be validated on the new server. Do not run this installer on the old AppBox host.

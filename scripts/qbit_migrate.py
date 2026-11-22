@@ -192,21 +192,27 @@ def saved_connections():
     except Exception:return []
 
 
-def export(args):
-    choices=[] if args.url else saved_connections()
+def capture_live(url_override=None):
+    choices=[] if url_override else saved_connections()
+    # Multiple Radarr categories may reference the same qBittorrent instance.
+    choices=list({(url,user):(name,url,user,password) for name,url,user,password in choices}.values())
     if choices:
         print('Saved qBittorrent connections from Radarr:')
         for number,(name,_,_,_) in enumerate(choices,1):print(f'{number}. {name!r}')
-        choice=input('Connection number [1], or M for manual login: ').strip() or '1'
+        choice='1' if len(choices)==1 else (input('Connection number [1], or M for manual login: ').strip() or '1')
         if choice.lower()=='m':choices=[]
         elif not choice.isdecimal() or not 1<=int(choice)<=len(choices):raise ValueError('Invalid connection number.')
         else:_,url,username,password=choices[int(choice)-1]
     if not choices:
-        url=args.url or input('Current qBittorrent WebUI URL (including port/path): ').strip()
+        url=url_override or input('Current qBittorrent WebUI URL (including port/path): ').strip()
         username=input('Current qBittorrent username: ').strip()
         password=getpass.getpass('Current qBittorrent password: ')
     client=Client(url);client.login(username,password)
-    document=capture(client)
+    return capture(client)
+
+
+def export(args):
+    document=capture_live(args.url)
     home=Path.home();owner=None
     try:
         cfg=json.loads(Path('/etc/media-server.json').read_text())
