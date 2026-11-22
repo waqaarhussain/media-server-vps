@@ -143,3 +143,15 @@ PYTHONPATH=scripts:bot python3 -m unittest discover -s tests
 Tests cover bot behaviour, conservative disk selection, cancelling before formatting, settings-only database sanitisation, credential-safe errors, combined encrypted backup structure, embedded qBittorrent settings import, category path mapping and password hashing. The native GPG roundtrip test runs where Unix sockets for gpg-agent are available; it is skipped in restricted environments. File Browser is pinned and its downloaded release checksum is verified. Its actual binary was smoke-tested for initialisation and login. The dashboard HTTP endpoints were checked locally.
 
 The complete installer has **not** been run against a disposable four-disk Ubuntu machine. Native service installation, provider networking and the actual disk layout must still be validated on the new server. Do not run this installer on the old AppBox host.
+
+### qBittorrent backup connection troubleshooting
+
+If Radarr's saved connection cannot be used for the backup, the helper reports the failing API endpoint and a safe HTTP/network error, then offers a manual WebUI URL/login retry. It never prints response bodies, passwords or session cookies. A normal client User-Agent is supplied, and API authentication uses matching Origin/Referer headers with an in-memory cookie jar. A redirect to another origin is refused instead of forwarding login data there.
+
+You can bypass the saved connection explicitly and still create one combined backup:
+
+```bash
+media-server backup --qbit-url https://YOUR_QBIT_WEBUI_HOST
+```
+
+Enter the existing qBittorrent WebUI username/password at the prompts, not in the command. This does not change Radarr's saved connection or qBittorrent's settings. Authentication and settings reads must succeed before the backup begins. HTTP 403 alone does not distinguish a temporary login/IP ban from a Host/Origin or provider proxy restriction. Avoid repeated password guesses; use the credentials shown by your provider.
