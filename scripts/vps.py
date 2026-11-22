@@ -25,6 +25,7 @@ import xml.etree.ElementTree as ET
 
 import manage
 import storage
+import qbit_migrate
 
 REPO=Path(__file__).resolve().parents[1]
 SETTINGS=Path('/etc/media-server-vps.json')
@@ -48,14 +49,14 @@ def save(state):
     manage.atomic(SETTINGS,json.dumps(state,indent=2)+'\n')
 
 
-def find_backups(root='/'):
+def find_backups(root='/',suffixes=('.tar.gz.gpg','.tgz.gpg','.tar.gpg')):
     """Read filenames and metadata only. Never decrypt, move or modify candidates."""
     excluded={'/proc','/sys','/dev','/run','/snap'}
     candidates=[];skipped=[]
     for directory,dirs,files in os.walk(root,followlinks=False,onerror=lambda error:skipped.append(error.filename)):
         dirs[:]=[name for name in dirs if str(Path(directory)/name) not in excluded]
         for name in files:
-            if not name.lower().endswith(('.tar.gz.gpg','.tgz.gpg','.tar.gpg')):
+            if not name.lower().endswith(suffixes):
                 continue
             path=Path(directory)/name
             try:
@@ -97,6 +98,26 @@ def choose_backup():
                 if path.is_file():return str(path)
                 print('That file is no longer available. Rescan with R.');continue
             print('Choose one of the displayed numbers or R, M, Q.')
+
+
+def choose_qbit_backup():
+    while True:
+        print('Searching for an optional qBittorrent settings backup…',flush=True)
+        candidates=[item for item in find_backups(suffixes=('.json.gpg',))
+                    if Path(item['path']).name.startswith('qbit-settings-')]
+        for number,item in enumerate(candidates,1):
+            print(f"{number}. {item['path']!r}")
+        if not candidates:print('No qBittorrent settings export found. Upload it, or use fresh defaults.')
+        prompt='qBittorrent backup number [1], R to rescan, S for fresh defaults, Q to cancel: ' if candidates else 'R to rescan, S for fresh defaults, Q to cancel: '
+        while True:
+            choice=input(prompt).strip().lower()
+            if not choice and candidates:choice='1'
+            if choice=='s':return None
+            if choice=='q':raise ValueError('Installation cancelled before restoring settings.')
+            if choice=='r':break
+            if choice.isdecimal() and 1<=int(choice)<=len(candidates):
+                return candidates[int(choice)-1]['path']
+            print('Choose a displayed number or R, S, Q.')
 
 
 def fresh_snapshot(snapshot):
@@ -158,7 +179,8 @@ def service(name, body):
 
 
 def folders(pool, cfg):
-    for relative in ('Movies','Kids/Movies','TV Shows','Downloads/Incomplete','Downloads/Complete','Torrent Archive'):
+    for relative in ('Movies','Kids','Kids/Movies','Kids/TV Shows','TV Shows','Downloads',
+                     'Downloads/Incomplete','Downloads/Complete','Torrent Archive'):
         path=Path(pool)/relative;path.mkdir(parents=True,exist_ok=True)
         os.chown(path,cfg['uid'],cfg['gid']);path.chmod(0o2775)
     # Only branch roots are changed. We do not recursively chown an entire media library.
@@ -185,23 +207,61 @@ class Qbit:
             with self.opener.open(req,timeout=15) as response:return response.read()
         except Exception:
             raise RuntimeError('Local qBittorrent API request failed; credentials suppressed.') from None
-    def configure(self,pool):
+    def get(self,path):
+        try:
+            req=urllib.request.Request('http://127.0.0.1:18080/api/v2/'+path,
+                                        headers={'Referer':'http://127.0.0.1:18080'})
+            with self.opener.open(req,timeout=15) as response:return json.load(response)
+        except Exception:
+            raise RuntimeError('Local qBittorrent API read failed; credentials suppressed.') from None
+    def configure(self,pool,cfg,snapshot=None):
         for _ in range(30):
             try:
                 if self.post('auth/login',{'username':'waqaar','password':self.password}).strip()==b'Ok.':break
             except RuntimeError:pass
             time.sleep(1)
         else:raise RuntimeError('qBittorrent login could not be verified.')
-        self.post('app/setPreferences',{'json':json.dumps({'save_path':pool+'/Downloads/Complete',
+        target=self.get('app/preferences')
+        snapshot=snapshot or {'schema':1,'kind':'qbit-settings-only','preferences':{},'categories':{}}
+        portable,review=qbit_migrate.portable_preferences(snapshot,target)
+        overrides={'save_path':pool+'/Downloads/Complete',
             'temp_path_enabled':True,'temp_path':pool+'/Downloads/Incomplete',
-            'export_dir_fin':pool+'/Torrent Archive','export_dir':'','listen_port':6881,'random_port':False})})
-        for category in ('Movies','Kids','TV'):
-            # A fresh qBittorrent profile has no categories. Reconcile an interrupted install safely.
-            try:self.post('torrents/createCategory',{'category':category,'savePath':pool+'/Downloads/Complete'})
-            except RuntimeError:self.post('torrents/editCategory',{'category':category,'savePath':pool+'/Downloads/Complete'})
+            'listen_port':6881,'random_port':False}
+        if 'torrent_files_finished_backup_dir' in target:
+            metadata=Path('/var/lib/media-stack/qbittorrent/torrent-metadata')
+            metadata.mkdir(parents=True,exist_ok=True)
+            os.chown(metadata,cfg['uid'],cfg['gid']);metadata.chmod(0o700)
+            overrides.update(torrent_files_backup_enabled=True,torrent_files_backup_dir=str(metadata),
+                torrent_files_finished_backup_dir_enabled=True,
+                torrent_files_finished_backup_dir=pool+'/Torrent Archive',remove_torrent_file_backup=False)
+        else:
+            overrides.update(export_dir_fin=pool+'/Torrent Archive',export_dir='')
+        self.post('app/setPreferences',{'json':json.dumps({**portable,**overrides})})
+        categories=qbit_migrate.category_paths(snapshot,pool)
+        current=self.get('torrents/categories')
+        for category,path in categories.items():
+            folder=Path(path);folder.mkdir(parents=True,exist_ok=True)
+            os.chown(folder,cfg['uid'],cfg['gid']);folder.chmod(0o2775)
+            endpoint='torrents/editCategory' if category in current else 'torrents/createCategory'
+            self.post(endpoint,{'category':category,'savePath':path})
+        after=self.get('app/preferences');actual=self.get('torrents/categories')
+        for key in ('save_path','temp_path'):
+            if str(after.get(key,'')).rstrip('/')!=overrides[key]:
+                raise ValueError('qBittorrent download folders did not verify.')
+        for name,path in categories.items():
+            if (actual.get(name) or {}).get('savePath','').rstrip('/')!=path:
+                raise ValueError('qBittorrent category paths did not verify.')
+        mismatch=sorted(k for k,v in portable.items() if after.get(k)!=v)
+        manage.atomic('/etc/media-qbit-migration.json',json.dumps({
+            'source_version':snapshot.get('version'),'portable_preferences_applied':sorted(portable),
+            'preferences_needing_review':review,'preferences_not_verified':mismatch,
+            'categories':categories},indent=2)+'\n')
+        print(f'qBittorrent: {len(portable)} portable preferences applied, {len(categories)} category paths verified.')
+        if review or mismatch:
+            print('Host-specific/unsupported settings need review. Details: /etc/media-qbit-migration.json')
 
 
-def install_qbit(cfg,pool,host,password):
+def install_qbit(cfg,pool,host,password,snapshot=None):
     home=Path('/var/lib/media-stack/qbittorrent');conf=home/'.config/qBittorrent/qBittorrent.conf'
     if not conf.exists():
         text='''[LegalNotice]
@@ -237,7 +297,7 @@ NoNewPrivileges=true
 WantedBy=multi-user.target
 ''')
     run(['systemctl','daemon-reload']);run(['systemctl','enable','--now','media-qbittorrent'])
-    Qbit(password).configure(pool)
+    Qbit(password).configure(pool,cfg,snapshot)
 
 
 def install_filebrowser(cfg,pool,password):
@@ -453,6 +513,8 @@ def install(args):
         raise ValueError('Existing app data found. This installer requires a fresh dedicated server.')
     backup=Path(args.restore).expanduser().resolve()
     if not backup.is_file():raise ValueError('Encrypted backup file not found. Upload it first.')
+    # Decrypt and validate the optional settings export before storage mutations.
+    qbit_snapshot=qbit_migrate.load_backup(args.qbit_settings) if args.qbit_settings else None
     if not state.get('storage'):
         if args.storage:
             state['storage']=storage.configure(args.storage)
@@ -476,7 +538,7 @@ def install(args):
     os.chown(base,cfg['uid'],cfg['gid']);base.chmod(0o750)
     folders(pool,cfg)
     print('Installing and verifying local qBittorrent…')
-    install_qbit(cfg,pool,host,password)
+    install_qbit(cfg,pool,host,password,qbit_snapshot)
     print('Installing File Browser…')
     install_filebrowser(cfg,pool,password)
     print('Configuring FTP and optional FTP TLS…')
@@ -505,10 +567,13 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('command',choices=('install','status','activate'),nargs='?',default='install')
     parser.add_argument('--restore');parser.add_argument('--storage');parser.add_argument('--host')
+    parser.add_argument('--qbit-settings');parser.add_argument('--fresh-qbit',action='store_true')
     args=parser.parse_args()
     if os.geteuid()!=0:raise ValueError('Use sudo media-vps.')
     if args.command=='install':
         if not args.restore:args.restore=choose_backup()
+        if args.qbit_settings and args.fresh_qbit:raise ValueError('Choose a qBittorrent backup or fresh defaults, not both.')
+        if not args.qbit_settings and not args.fresh_qbit:args.qbit_settings=choose_qbit_backup()
         install(args)
     elif args.command=='status':
         state=check_ready();print('Services ready. Media directory: '+state['pool'])

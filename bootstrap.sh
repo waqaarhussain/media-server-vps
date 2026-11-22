@@ -12,5 +12,15 @@ if [[ ! -d /opt/media-server-vps/.git ]]; then
         exit 1
     fi
     git clone https://github.com/waqaarhussain/media-server-vps.git /opt/media-server-vps
+else
+    if [[ $(git -C /opt/media-server-vps remote get-url origin) != https://github.com/waqaarhussain/media-server-vps.git ]]; then
+        echo 'Existing checkout has a different origin. Setup stopped.' >&2
+        exit 1
+    fi
+    if [[ -n $(git -C /opt/media-server-vps status --porcelain --untracked-files=no) ]]; then
+        echo 'Existing checkout has local edits. Setup stopped without overwriting them.' >&2
+        exit 1
+    fi
+    git -C /opt/media-server-vps pull --ff-only origin main
 fi
 exec bash /opt/media-server-vps/install.sh "$@"

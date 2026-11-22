@@ -8,6 +8,23 @@ This installer imports **settings only** from an encrypted `media-server backup`
 
 The shared public IMDb catalogue can be retained. This contains public movie metadata, not your download history. The Telegram update offset is retained to avoid replaying old commands. Finish any active downloads on the old server first; they will not resume here.
 
+## Export qBittorrent settings on the OLD AppBox server
+
+The original AppBox backup does not contain its provider-managed qBittorrent settings. Export these separately before migration:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/waqaarhussain/media-server-vps/main/scripts/qbit_migrate.py -o /tmp/qbit-migrate.py
+sudo python3 /tmp/qbit-migrate.py export
+```
+
+This reads the qBittorrent connection saved in native Radarr where available. Choose a connection by number. If it cannot find one, enter the current qBittorrent WebUI URL, username and hidden password. Then choose an encryption passphrase. It saves `qbit-settings-<timestamp>.json.gpg` in the existing user's `media-server-backups` folder and prints the exact filename. Export only authenticates and reads application version, preferences and category definitions. It does not modify the old client or stop its downloads.
+
+Copy **both** the original media-server backup and this extra qBittorrent settings file to the new server. The installer searches for the extra file and lets you choose it by number. Its passphrase is requested before any disk formatting. Choose **S** only if you want fresh qBittorrent defaults. You can also pass `--qbit-settings /path/qbit-settings-....json.gpg` or explicitly use `--fresh-qbit`.
+
+Portable preferences supported by the new version are restored, including speed limits, queue limits, connection limits, disk-cache preferences where available, and seeding limits. Category names are retained, including **Movies, Kids Movies, TV Series, Kids TV Series and radarr**. Their old save paths are replaced with new download staging paths. Radarr imports completed movies to `/srv/media/Movies` or `/srv/media/Kids/Movies`, so the bot's **Save to Kids** option still controls the final library destination.
+
+Custom completion scripts, watched folders, proxy/interface bindings, old WebUI credentials and unsupported preferences are captured in the encrypted export for review, but are not automatically activated. RSS feeds/rules, search plugins, cookies, torrent entries, resume data, per-torrent settings, payloads and download history are not exported. Delete-files seeding actions are changed to remove the torrent entry while retaining its files. The new login and ports take precedence. A root-only `/etc/media-qbit-migration.json` report lists applied preferences, review items and the new category paths. A separate export is needed for future qBittorrent settings migrations too.
+
 ## Before running
 
 * Use a fresh Ubuntu 24.04 or 26.04 server with root/sudo access and the same CPU architecture as the backup. Restored native binaries must be compatible with the target libraries; the installer rejects an older libc.
@@ -24,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/waqaarhussain/media-server-vps/main
 sudo bash /tmp/media-vps-bootstrap.sh
 ```
 
-The installer searches the VPS for encrypted `.tar.gz.gpg`, `.tgz.gpg` and `.tar.gpg` files and shows a numbered list, newest first, with sizes and modification times. Choose the backup by number, or press Enter for number 1. It only reads filenames and metadata during discovery; your backup is still validated when decrypted. You can rescan after uploading, enter a path manually, or cancel. Virtual system directories (`/proc`, `/sys`, `/dev`, `/run`, `/snap`) and symbolic links are skipped.
+After cloning or safely updating this repository, the installer searches the VPS for encrypted `.tar.gz.gpg`, `.tgz.gpg` and `.tar.gpg` files and shows a numbered list, newest first, with sizes and modification times. Choose the backup by number, or press Enter for number 1. It only reads filenames and metadata during discovery; your backup is still validated when decrypted. You can rescan after uploading, enter a path manually, or cancel. Virtual system directories (`/proc`, `/sys`, `/dev`, `/run`, `/snap`) and symbolic links are skipped.
 
 You will then be asked for storage mode, public server IP/hostname, shared app password and backup encryption passphrase. The login name is **waqaar**. Password entry is hidden and the password is not committed to this public repository. Use the same password when retrying a partially completed installation.
 
@@ -49,6 +66,7 @@ Raw capacity is **4 × 8 TB = 32 TB**, before Ubuntu, filesystem overhead and fr
 ```text
 /srv/media/Movies
 /srv/media/Kids/Movies
+/srv/media/Kids/TV Shows
 /srv/media/TV Shows
 /srv/media/Downloads/Incomplete
 /srv/media/Downloads/Complete
@@ -111,6 +129,6 @@ Run tests with:
 PYTHONPATH=scripts:bot python3 -m unittest discover -s tests
 ```
 
-Tests cover bot behaviour, conservative disk selection, cancelling before formatting, settings-only database sanitisation, credential-safe errors and qBittorrent password hashing. File Browser is pinned and its downloaded release checksum is verified. Its actual binary was smoke-tested for initialisation and login. The dashboard HTTP endpoints were checked locally.
+Tests cover bot behaviour, conservative disk selection, cancelling before formatting, settings-only database sanitisation, credential-safe errors, qBittorrent settings export/import, category path mapping and password hashing. The native GPG roundtrip test runs where Unix sockets for gpg-agent are available; it is skipped in restricted environments. File Browser is pinned and its downloaded release checksum is verified. Its actual binary was smoke-tested for initialisation and login. The dashboard HTTP endpoints were checked locally.
 
 The complete installer has **not** been run against a disposable four-disk Ubuntu machine. Native service installation, provider networking and the actual disk layout must still be validated on the new server. Do not run this installer on the old AppBox host.
