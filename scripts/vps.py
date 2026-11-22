@@ -209,11 +209,14 @@ class Qbit:
         import http.cookiejar
         self.opener=urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
         self.password=password
+        self.last_status=None
     def post(self,path,values):
         req=urllib.request.Request('http://127.0.0.1:18080/api/v2/'+path,
              urllib.parse.urlencode(values).encode(),headers={'Referer':'http://127.0.0.1:18080'})
         try:
-            with self.opener.open(req,timeout=15) as response:return response.read()
+            with self.opener.open(req,timeout=15) as response:
+                self.last_status=getattr(response,'status',200)
+                return response.read()
         except Exception:
             raise RuntimeError('Local qBittorrent API request failed; credentials suppressed.') from None
     def get(self,path):
@@ -226,7 +229,8 @@ class Qbit:
     def configure(self,pool,cfg,snapshot=None):
         for _ in range(30):
             try:
-                if self.post('auth/login',{'username':'waqaar','password':self.password}).strip()==b'Ok.':break
+                reply=self.post('auth/login',{'username':'waqaar','password':self.password}).strip()
+                if reply==b'Ok.' or (self.last_status==204 and not reply):break
             except RuntimeError:pass
             time.sleep(1)
         else:raise RuntimeError('qBittorrent login could not be verified.')

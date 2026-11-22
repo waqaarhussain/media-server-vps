@@ -76,13 +76,16 @@ class PortableSettingsTests(unittest.TestCase):
             def get(path):return copy.deepcopy(preferences if path=='app/preferences' else categories)
             def post(path,values):
                 calls.append(path)
-                if path=='auth/login':return b'Ok.'
+                if path=='auth/login':
+                    client.last_status=204
+                    return b''
                 if path=='app/setPreferences':preferences.update(json.loads(values['json']))
                 if path.startswith('torrents/'):
                     categories[values['category']]={'savePath':values['savePath']}
                 return b''
             with patch.object(client,'get',side_effect=get),patch.object(client,'post',side_effect=post),\
-                 patch.object(vps.os,'chown'),patch.object(vps.manage,'atomic') as audit:
+                 patch.object(vps.os,'chown'),patch.object(vps.manage,'atomic') as audit,\
+                 patch.object(vps.time,'sleep',side_effect=AssertionError('Successful HTTP 204 login must not retry')):
                 client.configure(str(pool),{'uid':1,'gid':1},document(up_limit=123))
             self.assertEqual(preferences['up_limit'],123)
             self.assertEqual(preferences['save_path'],str(pool)+'/Downloads/Complete')
@@ -139,6 +142,16 @@ class EmbeddedRestoreTests(unittest.TestCase):
             with patch.object(vps,'fresh_snapshot') as fresh,self.assertRaises(ValueError):
                 vps.prepare_restore(snapshot)
             fresh.assert_not_called()
+
+
+class NativeQbitAuthTests(unittest.TestCase):
+    def test_native_client_retains_http_status_for_empty_successful_login(self):
+        import io
+        client=vps.Qbit('test-password')
+        response=io.BytesIO(b'');response.status=204
+        client.opener=Mock();client.opener.open.return_value=response
+        self.assertEqual(client.post('auth/login',{'username':'waqaar','password':'test-password'}),b'')
+        self.assertEqual(client.last_status,204)
 
 
 if __name__=='__main__':unittest.main()
