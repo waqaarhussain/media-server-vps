@@ -24,7 +24,9 @@ curl -fsSL https://raw.githubusercontent.com/waqaarhussain/media-server-vps/main
 sudo bash /tmp/media-vps-bootstrap.sh
 ```
 
-You will be asked for the uploaded backup path, storage mode, public server IP/hostname, shared app password and backup encryption passphrase. The login name is **waqaar**. Password entry is hidden and the password is not committed to this public repository. Use the same password when retrying a partially completed installation.
+The installer searches the VPS for encrypted `.tar.gz.gpg`, `.tgz.gpg` and `.tar.gpg` files and shows a numbered list, newest first, with sizes and modification times. Choose the backup by number, or press Enter for number 1. It only reads filenames and metadata during discovery; your backup is still validated when decrypted. You can rescan after uploading, enter a path manually, or cancel. Virtual system directories (`/proc`, `/sys`, `/dev`, `/run`, `/snap`) and symbolic links are skipped.
+
+You will then be asked for storage mode, public server IP/hostname, shared app password and backup encryption passphrase. The login name is **waqaar**. Password entry is hidden and the password is not committed to this public repository. Use the same password when retrying a partially completed installation.
 
 Optional explicit paths:
 

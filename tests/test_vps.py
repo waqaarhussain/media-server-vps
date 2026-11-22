@@ -106,9 +106,6 @@ class FreshSettingsTests(unittest.TestCase):
         self.assertNotIn('private-test-password',str(caught.exception))
 
 
-if __name__=='__main__':unittest.main()
-
-
 class ConnectionTests(unittest.TestCase):
     def test_new_local_clients_and_radarr_application_are_created_without_movie_requests(self):
         import copy
@@ -145,3 +142,62 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual({f['name']:f['value'] for f in app['fields']}['prowlarrUrl'],
                          'http://127.0.0.1:19696/prowlarr')
         self.assertFalse(any(c[1].startswith(('movie','release')) for c in calls))
+
+
+class BackupDiscoveryTests(unittest.TestCase):
+    def test_finds_nested_encrypted_archives_newest_first_without_following_links(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);nested=root/'uploads';nested.mkdir()
+            old=root/'older.tar.gz.gpg';old.write_bytes(b'old encrypted test backup')
+            new=nested/'newer.tgz.gpg';new.write_bytes(b'new encrypted test backup')
+            os.utime(old,(100,100));os.utime(new,(200,200))
+            (root/'empty.tar.gz.gpg').touch()
+            (root/'movie.mkv').write_bytes(b'movie')
+            (root/'plain.tar.gz').write_bytes(b'not encrypted')
+            (root/'linked.tar.gz.gpg').symlink_to(new)
+            (root/'loop').symlink_to(root,target_is_directory=True)
+            result=vps.find_backups(root)
+            self.assertEqual([r['path'] for r in result],[str(new),str(old)])
+            self.assertEqual(result[0]['size'],new.stat().st_size)
+            self.assertEqual(old.read_bytes(),b'old encrypted test backup')
+
+    def test_virtual_directories_are_pruned_but_storage_is_searched(self):
+        dirs=['proc','sys','dev','run','snap','root','home','srv','mnt','tmp']
+        def walk(*args,**kwargs):
+            yield '/',dirs,[]
+        with patch.object(vps.os,'walk',side_effect=walk):
+            self.assertEqual(vps.find_backups(),[])
+        self.assertEqual(dirs,['root','home','srv','mnt','tmp'])
+
+    def test_numbered_selection_rejects_invalid_choices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            a=Path(tmp)/'a.tar.gz.gpg';a.write_bytes(b'a')
+            b=Path(tmp)/'b.tar.gz.gpg';b.write_bytes(b'b')
+            found=[{'path':str(p),'size':1,'mtime':100} for p in (a,b)]
+            with patch.object(vps,'find_backups',return_value=found),patch('builtins.input',side_effect=['x','0','3','2']):
+                self.assertEqual(vps.choose_backup(),str(b))
+
+    def test_single_backup_can_be_chosen_with_enter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'backup.tar.gz.gpg';path.write_bytes(b'a')
+            found=[{'path':str(path),'size':1,'mtime':100}]
+            with patch.object(vps,'find_backups',return_value=found),patch('builtins.input',return_value=''):
+                self.assertEqual(vps.choose_backup(),str(path))
+
+    def test_no_match_can_rescan_after_upload(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path=Path(tmp)/'backup.tar.gz.gpg';path.write_bytes(b'a')
+            found=[{'path':str(path),'size':1,'mtime':100}]
+            with patch.object(vps,'find_backups',side_effect=[[],found]) as scan,patch('builtins.input',side_effect=['r','1']):
+                self.assertEqual(vps.choose_backup(),str(path))
+                self.assertEqual(scan.call_count,2)
+
+    def test_cancel_never_starts_install_or_decrypt(self):
+        with patch.object(vps,'find_backups',return_value=[]),patch('builtins.input',return_value='q'), \
+             patch.object(vps,'install') as install,patch.object(vps.manage,'restore') as restore:
+            with self.assertRaisesRegex(ValueError,'cancelled'):vps.choose_backup()
+            install.assert_not_called();restore.assert_not_called()
+
+
+if __name__=='__main__':unittest.main()

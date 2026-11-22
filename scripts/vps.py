@@ -48,6 +48,57 @@ def save(state):
     manage.atomic(SETTINGS,json.dumps(state,indent=2)+'\n')
 
 
+def find_backups(root='/'):
+    """Read filenames and metadata only. Never decrypt, move or modify candidates."""
+    excluded={'/proc','/sys','/dev','/run','/snap'}
+    candidates=[];skipped=[]
+    for directory,dirs,files in os.walk(root,followlinks=False,onerror=lambda error:skipped.append(error.filename)):
+        dirs[:]=[name for name in dirs if str(Path(directory)/name) not in excluded]
+        for name in files:
+            if not name.lower().endswith(('.tar.gz.gpg','.tgz.gpg','.tar.gpg')):
+                continue
+            path=Path(directory)/name
+            try:
+                if path.is_symlink() or not path.is_file():continue
+                info=path.stat()
+                if info.st_size:
+                    candidates.append({'path':str(path),'size':info.st_size,'mtime':info.st_mtime})
+            except OSError:
+                skipped.append(str(path))
+    if skipped:
+        print('Some locations could not be read. Upload to /root or /home and rescan if your backup is missing.')
+    return sorted(candidates,key=lambda item:(-item['mtime'],item['path']))
+
+
+def choose_backup():
+    while True:
+        print('Searching this VPS for encrypted backup files. This may take a moment…',flush=True)
+        candidates=find_backups()
+        if candidates:
+            print('\nFound backups (newest first). These filenames have not yet been decrypted/validated:')
+            for number,item in enumerate(candidates,1):
+                stamp=time.strftime('%Y-%m-%d %H:%M',time.localtime(item['mtime']))
+                print(f"{number}. {item['path']!r}  |  {item['size']/1024**2:.1f} MiB  |  {stamp} server time")
+            prompt='Backup number [1], R to rescan, M to enter a path, or Q to cancel: '
+        else:
+            print('No encrypted backup found. Upload your .tar.gz.gpg file anywhere under /root or /home, then rescan.')
+            prompt='R to rescan after uploading, M to enter a path, or Q to cancel: '
+        while True:
+            choice=input(prompt).strip()
+            if not choice and candidates:choice='1'
+            if choice.lower()=='q':raise ValueError('Backup selection cancelled. No restore started.')
+            if choice.lower()=='r':break
+            if choice.lower()=='m':
+                path=Path(input('Backup file path: ').strip()).expanduser()
+                if path.is_file():return str(path.resolve())
+                print('That file was not found. Try again.');continue
+            if choice.isdecimal() and 1<=int(choice)<=len(candidates):
+                path=Path(candidates[int(choice)-1]['path'])
+                if path.is_file():return str(path)
+                print('That file is no longer available. Rescan with R.');continue
+            print('Choose one of the displayed numbers or R, M, Q.')
+
+
 def fresh_snapshot(snapshot):
     """Sanitize our decrypted temporary copy, never the original encrypted file."""
     audit={}
@@ -457,7 +508,7 @@ def main():
     args=parser.parse_args()
     if os.geteuid()!=0:raise ValueError('Use sudo media-vps.')
     if args.command=='install':
-        if not args.restore:args.restore=input('Full path to uploaded .tar.gz.gpg backup: ').strip()
+        if not args.restore:args.restore=choose_backup()
         install(args)
     elif args.command=='status':
         state=check_ready();print('Services ready. Media directory: '+state['pool'])
